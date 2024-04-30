@@ -73,7 +73,7 @@ class ExpertCache:
         # self.device_expert_buffers = deque([self._check_module(make_module()) for _ in range(buffer_size)])
         # self.offloaded_storage_buffers = deque([
         #     torch.UntypedStorage(self.module_size).pin_memory(self.device) for _ in range(buffer_size)])
-        self.group_infos: Dict[int, EvictionGroupInfo] = defaultdict(EvictionGroupInfo)
+        # self.group_infos: Dict[int, EvictionGroupInfo] = defaultdict(EvictionGroupInfo)
 
     def _check_module(self, module: MixtralExpertWrapper):
         assert isinstance(module.storage, torch.UntypedStorage)
@@ -106,7 +106,7 @@ class ExpertCache:
                     self.main_modules[i].storage.copy_(storage)
                     info = ExpertInfo(uid, eviction_group=eviction_group, offloaded=False, index=i)
                     self.registered_experts[uid] = self.main_infos[i] = info
-                    self.group_infos[eviction_group].add(info)
+                    # self.group_infos[eviction_group].add(info)
                     return  # done allocating; found spot on device
         if offload is None or offload:  # True or None
             # for i in range(len(self.offloaded_storages)):
@@ -121,7 +121,7 @@ class ExpertCache:
                     self.offloaded_modules[i].storage.copy_(storage)
                     info = ExpertInfo(uid, eviction_group=eviction_group, offloaded=True, index=i)
                     self.registered_experts[uid] = self.offloaded_infos[i] = info
-                    self.group_infos[eviction_group].add(info)
+                    # self.group_infos[eviction_group].add(info)
                     return # done allocating; found spot on cpu
         raise ValueError("Cache is full")
 

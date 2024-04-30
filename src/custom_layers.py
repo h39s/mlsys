@@ -14,7 +14,7 @@ from .triton_kernels import triton_matmul4_transpose, triton_matmul3_transpose, 
 
 
 class HQQLinearTritonSavable(HQQLinear):
-    def __init__(self, layer, quant_config, meta=None, **kwargs):
+    def __init__(self, layer, quant_config, meta=None, use_gpu=True, **kwargs):
         """
         Example how to get meta:
         >>>> meta1 = HQQLinearSavable.get_hqq_meta((hidden_dim, ffn_dim), quant_config)
@@ -23,6 +23,7 @@ class HQQLinearTritonSavable(HQQLinear):
         
         assert quant_config['weight_quant_params']['nbits'] in [2, 3, 4]
         
+        self.use_gpu = use_gpu
         super().__init__(layer, quant_config, **kwargs)
         
         if not hasattr(self, 'meta'):
@@ -32,8 +33,25 @@ class HQQLinearTritonSavable(HQQLinear):
         self._register_state_dict_hook(self._add_to_state_dict_hook)
         self._register_load_state_dict_pre_hook(self._load_from_state_dict_hook)
     
-    def quantize(self, *args, **kwargs):
-        super().quantize(*args, **kwargs)
+    def quantize(self, W, weight_quant_params, scale_quant_params, zero_quant_params):
+        quant_scale = scale_quant_params is not None
+        quant_zero  = zero_quant_params  is not None
+        
+        #Quantize
+        W_q , meta = Quantizer.quantize(W, **weight_quant_params) 
+        meta.update({'quant_scale':quant_scale, 'quant_zero':quant_zero})
+        if(meta['quant_scale']):
+            meta['scale_q'] , meta['meta_scale'] = Quantizer.quantize(meta['scale'], **scale_quant_params); del meta['scale']
+        if(meta['quant_zero']):
+            meta['zero_q'], meta['meta_zero']    = Quantizer.quantize(meta['zero'],  **zero_quant_params);  del meta['zero']
+
+        self.W_q   = W_q
+        self.meta  = meta
+        if self.use_gpu:
+            self.cuda()
+        else:
+            self.cpu()
+        self.ready = True
         
         # repacking
         self.repack()
@@ -47,6 +65,8 @@ class HQQLinearTritonSavable(HQQLinear):
             self.W_q = Quantizer.pack[self.meta['packing']](W_q)
     
     def forward(self, x):
+        if not self.use_gpu:
+            return self.forward_pytorch(x)
         return self.forward_triton(x)
     
     def set_backend(self, backend):
@@ -241,12 +261,12 @@ class HQQLinearTritonSavable(HQQLinear):
 
 
 class MixtralBLockSparseTop2MLP_HQQ(nn.Module):
-    def __init__(self, config: MixtralConfig, quant_config: Dict[str, Any], meta1, meta2):
+    def __init__(self, config: MixtralConfig, quant_config: Dict[str, Any], meta1, meta2, use_gpu=True):
         super().__init__()
         
-        self.w1 = HQQLinearTritonSavable(None, quant_config, meta1)
-        self.w2 = HQQLinearTritonSavable(None, quant_config, meta2)
-        self.w3 = HQQLinearTritonSavable(None, quant_config, meta1)
+        self.w1 = HQQLinearTritonSavable(None, quant_config, meta1, use_gpu)
+        self.w2 = HQQLinearTritonSavable(None, quant_config, meta2, use_gpu)
+        self.w3 = HQQLinearTritonSavable(None, quant_config, meta1, use_gpu)
 
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -270,6 +290,52 @@ class SparseMoeWrapper(nn.Module):
         self.experts = expert_cache
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        # router_logits: (batch * sequence_length, n_experts)
+        router_logits = self.gate(hidden_states)
+
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        # we cast back to the input dtype
+        routing_weights = routing_weights.to(hidden_states.dtype)
+
+        final_hidden_states = torch.zeros(
+            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+        )
+
+        # One hot encode the selected experts to create an expert mask
+        # this will be used to easily index which expert is going to be sollicitated
+        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+
+        active_experts = selected_experts.flatten().unique().tolist()
+
+        # Loop over all available experts in the model and perform the computation on each expert
+        for (_layer_index, expert_idx), expert_layer in self.experts.load_experts_without_moving(
+                *((self.layer_id, expert_idx) for expert_idx in active_experts)):
+            idx, top_x = torch.where(expert_mask[expert_idx])
+            assert top_x.shape[0] > 0
+
+            # in torch it is faster to index using lists than torch tensors
+            top_x_list = top_x.tolist()
+            idx_list = idx.tolist()
+
+            # Index the correct hidden states and compute the expert hidden state for
+            # the current expert. We need to make sure to multiply the output hidden
+            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+            current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
+            # move current state to expert layer device
+            current_state = current_state.to(expert_layer.storage.device)
+            current_hidden_states = expert_layer(current_state).to(routing_weights.device) * routing_weights[top_x_list, idx_list, None]
+
+            # However `index_add_` only support torch tensors for indexing so we'll use
+            # the `top_x` tensor here.
+            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+        final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        return final_hidden_states, router_logits
+
+    def forward_backup(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)

@@ -18,7 +18,7 @@ import numpy as np
 run_config = yaml.safe_load(open(sys.argv[1]))
 model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 quantized_model_name = "lavawolfiee/Mixtral-8x7B-Instruct-v0.1-offloading-demo"
-state_path = "/home/amangupt/random/mixtral-offloading/Mixtral-8x7B-Instruct-v0.1-offloading-demo"
+state_path = './Mixtral-8x7B-Instruct-v0.1-offloading-demo'
 benchmark_prompts = "benchmark_prompts.txt"
 def read_prompt(file_path):
     with open(file_path, "r") as f:
@@ -93,9 +93,7 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
         os.makedirs(run_log_dir, exist_ok=True)
         seq_len = 0
         # CHANGE FILENAME HERE
-        filename = "results"
-        log_file = open(f"{run_log_dir}/{filename}.txt", "w")
-        dump_data_file = open(f"{run_log_dir}/{filename}.json", "w")
+        
         for i in range(len(all_prompts)):
             start = time.time()
             print("User: ", end="")
@@ -135,56 +133,59 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
             total_num_tokens.append(seq_len)
 
 
-        print("TIME BENCHMARKS", file=log_file)
-        print(f"Total time taken: {sum(total_time)} seconds", file=log_file)
-        print(f"Total number of tokens generated: {sum(total_num_tokens)}", file=log_file)
-        print(f"Average token per second: {sum(total_num_tokens)/sum(total_time)}", file=log_file)
-        track_runs_time.append(sum(total_time))
-        track_runs_num_tokens.append(sum(total_num_tokens))
-        track_runs_tokens_per_second.append(sum(total_num_tokens)/sum(total_time))
-        print('\n\n\n', file=log_file)
+        filename = "results"
+        with open(f"{run_log_dir}/{filename}.txt", "w") as log_file:
+            print("TIME BENCHMARKS", file=log_file)
+            print(f"Total time taken: {sum(total_time)} seconds", file=log_file)
+            print(f"Total number of tokens generated: {sum(total_num_tokens)}", file=log_file)
+            print(f"Average token per second: {sum(total_num_tokens)/sum(total_time)}", file=log_file)
+            track_runs_time.append(sum(total_time))
+            track_runs_num_tokens.append(sum(total_num_tokens))
+            track_runs_tokens_per_second.append(sum(total_num_tokens)/sum(total_time))
+            print('\n\n\n', file=log_file)
 
-        print("HIT RATE BENCHMARKS", file=log_file)
-        data_hits = {}
+            print("HIT RATE BENCHMARKS", file=log_file)
+            data_hits = {}
 
-        for k in expert_cache_obj.group_infos:
-            data_hits[k] = expert_cache_obj.group_infos[k].expert_counts
-        # print(data_hits)
-        # print overall hit rate and hit rate per layer
-        overall_hits = 0
-        overall_misses = 0
-        for layer in data_hits:
-            tot_calls = 0
-            tot_hits = 0
-            # print(data_hits[layer])
-            for exp in data_hits[layer]:
-                tot_calls += data_hits[layer][exp][0]
-                tot_hits += data_hits[layer][exp][1]
-            # print(tot_hits, tot_calls)
-            overall_hits += tot_hits
-            overall_misses += tot_calls - tot_hits
-            print(f"Layer {layer}: Hit rate = {tot_hits/tot_calls}", file=log_file)
+            for k in expert_cache_obj.group_infos:
+                data_hits[k] = expert_cache_obj.group_infos[k].expert_counts
+            # print(data_hits)
+            # print overall hit rate and hit rate per layer
+            overall_hits = 0
+            overall_misses = 0
+            for layer in data_hits:
+                tot_calls = 0
+                tot_hits = 0
+                # print(data_hits[layer])
+                for exp in data_hits[layer]:
+                    tot_calls += data_hits[layer][exp][0]
+                    tot_hits += data_hits[layer][exp][1]
+                # print(tot_hits, tot_calls)
+                overall_hits += tot_hits
+                overall_misses += tot_calls - tot_hits
+                print(f"Layer {layer}: Hit rate = {tot_hits/tot_calls}", file=log_file)
 
-        print(f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}", file=log_file)
-        track_runs_hits.append(overall_hits/(overall_hits + overall_misses))
+            print(f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}", file=log_file)
+            track_runs_hits.append(overall_hits/(overall_hits + overall_misses))
 
 
+        with open(f"{run_log_dir}/{filename}.json", "w") as dump_data_file:
             # dump data_hits, total_time, total_num_tokens to a json file
-        import json
-        all_stats = {"data_hits": data_hits, "total_time": total_time, "total_num_tokens": total_num_tokens}
-        json.dump(all_stats, dump_data_file, indent=4)
+            import json
+            all_stats = {"data_hits": data_hits, "total_time": total_time, "total_num_tokens": total_num_tokens}
+            json.dump(all_stats, dump_data_file, indent=4)
 
-    overall_results_file = open(f"{log_dir}/overall_results.txt", "w")
-    print("OVERALL RESULTS", file=overall_results_file)
-    print(f'All times', track_runs_time, file=overall_results_file)
-    print(f'All num tokens', track_runs_num_tokens, file=overall_results_file)
-    print(f'All tokens per second', track_runs_tokens_per_second, file=overall_results_file)
-    print(f'All hits', track_runs_hits, file=overall_results_file)
+    with open(f"{log_dir}/overall_results.txt", "w") as overall_results_file:
+        print("OVERALL RESULTS", file=overall_results_file)
+        print(f'All times', track_runs_time, file=overall_results_file)
+        print(f'All num tokens', track_runs_num_tokens, file=overall_results_file)
+        print(f'All tokens per second', track_runs_tokens_per_second, file=overall_results_file)
+        print(f'All hits', track_runs_hits, file=overall_results_file)
 
-    # print mean and std of all times, num tokens, tokens per second, hits as mean
-    # +- std
-    print("OVERALL STATS", file=overall_results_file)
-    print(f'Run_Time: {sum(track_runs_time)/len(track_runs_time)} +- {np.std(track_runs_time)}', file=overall_results_file)
-    print(f'Num Tokens: {sum(track_runs_num_tokens)/len(track_runs_num_tokens)} +- {np.std(track_runs_num_tokens)}', file=overall_results_file)
-    print(f'Tokens per second: {sum(track_runs_tokens_per_second)/len(track_runs_tokens_per_second)} +- {np.std(track_runs_tokens_per_second)}', file=overall_results_file)
-    print(f'Hit Rate: {sum(track_runs_hits)/len(track_runs_hits)} +- {np.std(track_runs_hits)}', file=overall_results_file)
+        # print mean and std of all times, num tokens, tokens per second, hits as mean
+        # +- std
+        print("OVERALL STATS", file=overall_results_file)
+        print(f'Run_Time: {sum(track_runs_time)/len(track_runs_time)} +- {np.std(track_runs_time)}', file=overall_results_file)
+        print(f'Num Tokens: {sum(track_runs_num_tokens)/len(track_runs_num_tokens)} +- {np.std(track_runs_num_tokens)}', file=overall_results_file)
+        print(f'Tokens per second: {sum(track_runs_tokens_per_second)/len(track_runs_tokens_per_second)} +- {np.std(track_runs_tokens_per_second)}', file=overall_results_file)
+        print(f'Hit Rate: {sum(track_runs_hits)/len(track_runs_hits)} +- {np.std(track_runs_hits)}', file=overall_results_file)

@@ -169,6 +169,7 @@ def build_model(
     offload_config: OffloadConfig,
     state_path: str,
     experts_to_offload: list[list[int]] = None,
+    cache_strategy: str = 'lru'
 ):
     model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
@@ -207,6 +208,7 @@ def build_model(
         main_size=offload_config.main_size,
         offload_size=offload_config.offload_size,
         buffer_size=offload_config.buffer_size,
+        cache_strategy=cache_strategy
     )
     for layer_idx in trange(model_config.num_hidden_layers, desc="Loading experts"):
         curr_layer = model.model.layers[layer_idx]

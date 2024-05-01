@@ -1,9 +1,10 @@
 import random
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, InitVar
 from typing import Any, Dict, Optional, Iterator, Tuple, List
 from collections import deque, defaultdict, OrderedDict
 from .expert_wrapper import MixtralExpertWrapper
+from functools import partial
 
 import torch
 from torch import nn
@@ -49,8 +50,8 @@ class EvictionGroupInfo:
         elif strategy == "lfu":
             min_hits, min_info = float("inf"), None
             for uid, info in self.main_infos.items():
-                if self.expert_hits.get(info.uid, 0) < min_hits:
-                    min_hits = self.expert_hits.get(info.uid, 0)
+                if self.expert_counts[info.uid[1]][0] < min_hits:
+                    min_hits = self.expert_counts[info.uid[1]][0]
                     min_info = info
             if min_info is not None:
                 return min_info
@@ -82,11 +83,12 @@ class EvictionGroupInfo:
 
 class ExpertCache:
     def __init__(
-        self, make_module: callable, main_size: int, offload_size: int, buffer_size: int
+        self, make_module: callable, main_size: int, offload_size: int, buffer_size: int, cache_strategy: str
     ):
         """Dynamically loads an array of modules with identical hyperparameters"""
         self.module_type = self.module_size = self.device = None
         self.active = False
+        self.cache_strategy = cache_strategy  # lru, lfu, random
 
         self.registered_experts: Dict[ExpertUID, ExpertInfo] = dict()
 
@@ -226,7 +228,7 @@ class ExpertCache:
                 experts_in_loading.append(
                     self._swap(
                         info_to_load,
-                        eviction_group.choose_expert_to_evict(EVICTION_STRATEGY),
+                        eviction_group.choose_expert_to_evict(self.cache_strategy),
                     )
                 )
 
@@ -244,7 +246,7 @@ class ExpertCache:
                             self._swap(
                                 info_to_load,
                                 eviction_group.choose_expert_to_evict(
-                                    EVICTION_STRATEGY
+                                    self.cache_strategy
                                 ),
                             )
                         )

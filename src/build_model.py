@@ -168,6 +168,7 @@ def build_model(
     quant_config: QuantConfig,
     offload_config: OffloadConfig,
     state_path: str,
+    experts_to_offload: list[list[int]] = None,
 ):
     model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
@@ -217,7 +218,10 @@ def build_model(
         )
 
         for expert_idx in range(model_config.num_local_experts):
-            do_offload = expert_idx < offload_config.offload_per_layer
+            if experts_to_offload is not None:
+                do_offload = expert_idx in experts_to_offload[layer_idx]
+            else:
+                do_offload = expert_idx < offload_config.offload_per_layer
 
             expert_wrapper = make_and_load_expert_wrapper(
                 config=model_config,

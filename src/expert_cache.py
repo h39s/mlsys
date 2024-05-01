@@ -10,7 +10,7 @@ from torch import nn
 
 ExpertUID = Any
 
-EVICTION_STRATEGY = "lfu"
+EVICTION_STRATEGY = "lru"
 
 
 @dataclass(frozen=False)

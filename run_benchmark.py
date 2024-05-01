@@ -66,8 +66,6 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     past_key_values = None
     sequence = None
-    total_time = []
-    total_num_tokens = []
     track_runs_time = []
     track_runs_num_tokens = []
     track_runs_tokens_per_second = []
@@ -81,6 +79,8 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
         yaml.dump(run_config, f)
 
     for run_idx in range(run_config['num_runs']):
+        total_time = []
+        total_num_tokens = []
         print(f"Running benchmark for run {run_idx}")
         model, expert_cache_obj = build_model(
             device=device,
@@ -92,6 +92,10 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
         run_log_dir = f"{log_dir}/run_{run_idx}"  
         os.makedirs(run_log_dir, exist_ok=True)
         seq_len = 0
+        # CHANGE FILENAME HERE
+        filename = "results"
+        log_file = open(f"{run_log_dir}/{filename}.txt", "w")
+        dump_data_file = open(f"{run_log_dir}/{filename}.json", "w")
         for i in range(len(all_prompts)):
             start = time.time()
             print("User: ", end="")
@@ -130,41 +134,36 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
             seq_len = sum([len(seq) for seq in sequence])
             total_num_tokens.append(seq_len)
 
-            # CHANGE FILENAME HERE
-            filename = "results"
-            log_file = open(f"{run_log_dir}/{filename}.txt", "w")
-            dump_data_file = open(f"{run_log_dir}/{filename}.json", "w")
 
+        print("TIME BENCHMARKS", file=log_file)
+        print(f"Total time taken: {sum(total_time)} seconds", file=log_file)
+        print(f"Total number of tokens generated: {sum(total_num_tokens)}", file=log_file)
+        print(f"Average token per second: {sum(total_num_tokens)/sum(total_time)}", file=log_file)
+        track_runs_time.append(sum(total_time))
+        track_runs_num_tokens.append(sum(total_num_tokens))
+        track_runs_tokens_per_second.append(sum(total_num_tokens)/sum(total_time))
+        print('\n\n\n', file=log_file)
 
-            print("TIME BENCHMARKS", file=log_file)
-            print(f"Total time taken: {sum(total_time)} seconds", file=log_file)
-            print(f"Total number of tokens generated: {sum(total_num_tokens)}", file=log_file)
-            print(f"Average token per second: {sum(total_num_tokens)/sum(total_time)}", file=log_file)
-            track_runs_time.append(sum(total_time))
-            track_runs_num_tokens.append(sum(total_num_tokens))
-            track_runs_tokens_per_second.append(sum(total_num_tokens)/sum(total_time))
-            print('\n\n\n', file=log_file)
+        print("HIT RATE BENCHMARKS", file=log_file)
+        data_hits = {}
 
-            print("HIT RATE BENCHMARKS", file=log_file)
-            data_hits = {}
-
-            for k in expert_cache_obj.group_infos:
-                data_hits[k] = expert_cache_obj.group_infos[k].expert_counts
-            # print(data_hits)
-            # print overall hit rate and hit rate per layer
-            overall_hits = 0
-            overall_misses = 0
-            for layer in data_hits:
-                tot_calls = 0
-                tot_hits = 0
-                # print(data_hits[layer])
-                for exp in data_hits[layer]:
-                    tot_calls += data_hits[layer][exp][0]
-                    tot_hits += data_hits[layer][exp][1]
-                # print(tot_hits, tot_calls)
-                overall_hits += tot_hits
-                overall_misses += tot_calls - tot_hits
-                print(f"Layer {layer}: Hit rate = {tot_hits/tot_calls}", file=log_file)
+        for k in expert_cache_obj.group_infos:
+            data_hits[k] = expert_cache_obj.group_infos[k].expert_counts
+        # print(data_hits)
+        # print overall hit rate and hit rate per layer
+        overall_hits = 0
+        overall_misses = 0
+        for layer in data_hits:
+            tot_calls = 0
+            tot_hits = 0
+            # print(data_hits[layer])
+            for exp in data_hits[layer]:
+                tot_calls += data_hits[layer][exp][0]
+                tot_hits += data_hits[layer][exp][1]
+            # print(tot_hits, tot_calls)
+            overall_hits += tot_hits
+            overall_misses += tot_calls - tot_hits
+            print(f"Layer {layer}: Hit rate = {tot_hits/tot_calls}", file=log_file)
 
             print(f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}", file=log_file)
             track_runs_hits.append(overall_hits/(overall_hits + overall_misses))

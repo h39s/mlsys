@@ -1,3 +1,5 @@
+import random
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Iterator, Tuple, List
 from collections import deque, defaultdict, OrderedDict
@@ -7,6 +9,8 @@ import torch
 from torch import nn
 
 ExpertUID = Any
+
+EVICTION_STRATEGY = "lfu"
 
 
 @dataclass(frozen=False)
@@ -21,27 +25,45 @@ class ExpertInfo:
 class EvictionGroupInfo:
     # infos in main and offload devices; ordered from least recently used to most
     main_infos: OrderedDict[ExpertUID, ExpertInfo] = field(default_factory=OrderedDict)
-    offloaded_infos: OrderedDict[ExpertUID, ExpertInfo] = field(default_factory=OrderedDict)
+    offloaded_infos: OrderedDict[ExpertUID, ExpertInfo] = field(
+        default_factory=OrderedDict
+    )
     hits: int = field(default=0)
     misses: int = field(default=0)
+    expert_hits: dict = field(default_factory=dict)
 
     def add(self, info: ExpertInfo):
         infos_odict = self.offloaded_infos if info.offloaded else self.main_infos
         assert info.uid not in infos_odict, f"expert {info.uid} already exists"
         infos_odict[info.uid] = info
 
-    def choose_expert_to_evict(self) -> ExpertInfo:
-        for uid, info in self.main_infos.items():
-            return info  # least recently used
+    def choose_expert_to_evict(self, strategy="lru") -> ExpertInfo:
+        if strategy == "lru":
+            for uid, info in self.main_infos.items():
+                return info  # least recently used
+        elif strategy == "lfu":
+            min_hits, min_info = float("inf"), None
+            for uid, info in self.main_infos.items():
+                if self.expert_hits.get(info.uid, 0) < min_hits:
+                    min_hits = self.expert_hits.get(info.uid, 0)
+                    min_info = info
+            if min_info is not None:
+                return min_info
+        elif strategy == "random":
+            return random.choice(list(self.main_infos.values()))
         raise ValueError("No evictable experts")
 
     def swap(self, info_to_load: ExpertInfo, info_to_evict: ExpertInfo):
-        assert info_to_load.uid in self.offloaded_infos and info_to_evict.uid in self.main_infos
+        assert (
+            info_to_load.uid in self.offloaded_infos
+            and info_to_evict.uid in self.main_infos
+        )
         self.main_infos[info_to_load.uid] = self.offloaded_infos.pop(info_to_load.uid)
         self.main_infos.move_to_end(info_to_load.uid, last=True)
         self.offloaded_infos[info_to_evict.uid] = self.main_infos.pop(info_to_evict.uid)
 
     def mark_used(self, info: ExpertInfo):
+        self.expert_hits[info.uid] = self.expert_hits.get(info.uid, 0) + 1
         if info.uid in self.main_infos:
             self.main_infos.move_to_end(info.uid, last=True)
             self.hits += 1
@@ -53,25 +75,39 @@ class EvictionGroupInfo:
 
 
 class ExpertCache:
-    def __init__(self, make_module: callable, main_size: int, offload_size: int, buffer_size: int):
+    def __init__(
+        self, make_module: callable, main_size: int, offload_size: int, buffer_size: int
+    ):
         """Dynamically loads an array of modules with identical hyperparameters"""
         self.module_type = self.module_size = self.device = None
         self.active = False
 
         self.registered_experts: Dict[ExpertUID, ExpertInfo] = dict()
 
-        self.main_modules = [self._check_module(make_module()) for i in range(main_size)]
+        self.main_modules = [
+            self._check_module(make_module()) for i in range(main_size)
+        ]
         self.main_infos: List[Optional[ExpertInfo]] = [None for _ in range(main_size)]
 
         assert self.module_size is not None
         self.offloaded_storages = [
-            torch.UntypedStorage(self.module_size).pin_memory(self.device) for _ in range(offload_size)]
-        self.offloaded_infos: List[Optional[ExpertInfo]] = [None for _ in range(offload_size)]
+            torch.UntypedStorage(self.module_size).pin_memory(self.device)
+            for _ in range(offload_size)
+        ]
+        self.offloaded_infos: List[Optional[ExpertInfo]] = [
+            None for _ in range(offload_size)
+        ]
 
         # temporary storage to shave off latency
-        self.device_expert_buffers = deque([self._check_module(make_module()) for _ in range(buffer_size)])
-        self.offloaded_storage_buffers = deque([
-            torch.UntypedStorage(self.module_size).pin_memory(self.device) for _ in range(buffer_size)])
+        self.device_expert_buffers = deque(
+            [self._check_module(make_module()) for _ in range(buffer_size)]
+        )
+        self.offloaded_storage_buffers = deque(
+            [
+                torch.UntypedStorage(self.module_size).pin_memory(self.device)
+                for _ in range(buffer_size)
+            ]
+        )
         self.group_infos: Dict[int, EvictionGroupInfo] = defaultdict(EvictionGroupInfo)
 
     def _check_module(self, module: MixtralExpertWrapper):
@@ -86,15 +122,27 @@ class ExpertCache:
             assert module.storage.device == self.device
         return module
 
-    def add_expert(self, uid: ExpertUID, module: MixtralExpertWrapper, eviction_group: int = 0,
-                   offload: Optional[bool] = None):
+    def add_expert(
+        self,
+        uid: ExpertUID,
+        module: MixtralExpertWrapper,
+        eviction_group: int = 0,
+        offload: Optional[bool] = None,
+    ):
         """Register an expert to the cache and associate it with uid"""
         assert self.module_type is not None
         assert isinstance(module, self.module_type)
-        return self.add_expert_storage(uid, module.storage, eviction_group=eviction_group, offload=offload)
+        return self.add_expert_storage(
+            uid, module.storage, eviction_group=eviction_group, offload=offload
+        )
 
-    def add_expert_storage(self, uid: ExpertUID, storage: torch.UntypedStorage,
-                           eviction_group: int = 0, offload: Optional[bool] = None):
+    def add_expert_storage(
+        self,
+        uid: ExpertUID,
+        storage: torch.UntypedStorage,
+        eviction_group: int = 0,
+        offload: Optional[bool] = None,
+    ):
         assert uid not in self.registered_experts, f"expert {uid} already registered"
         assert isinstance(storage, torch.UntypedStorage)
         assert len(storage) == self.module_size
@@ -103,7 +151,9 @@ class ExpertCache:
             for i in range(len(self.main_modules)):
                 if self.main_infos[i] is None:
                     self.main_modules[i].storage.copy_(storage)
-                    info = ExpertInfo(uid, eviction_group=eviction_group, offloaded=False, index=i)
+                    info = ExpertInfo(
+                        uid, eviction_group=eviction_group, offloaded=False, index=i
+                    )
                     self.registered_experts[uid] = self.main_infos[i] = info
                     self.group_infos[eviction_group].add(info)
                     return  # done allocating; found spot on device
@@ -111,14 +161,17 @@ class ExpertCache:
             for i in range(len(self.offloaded_storages)):
                 if self.offloaded_infos[i] is None:
                     self.offloaded_storages[i].copy_(storage)
-                    info = ExpertInfo(uid, eviction_group=eviction_group, offloaded=True, index=i)
+                    info = ExpertInfo(
+                        uid, eviction_group=eviction_group, offloaded=True, index=i
+                    )
                     self.registered_experts[uid] = self.offloaded_infos[i] = info
                     self.group_infos[eviction_group].add(info)
                     return  # done allocating; found an offloaded spot
         raise ValueError("Cache is full")
 
     def load_experts(
-            self, *uids: ExpertUID, unordered: bool = False) -> Iterator[Tuple[ExpertUID, MixtralExpertWrapper]]:
+        self, *uids: ExpertUID, unordered: bool = False
+    ) -> Iterator[Tuple[ExpertUID, MixtralExpertWrapper]]:
         """
         :example:
         >>> for uid, expert in expert_cache.load_experts(*list_of_uids, unordered=True):
@@ -137,7 +190,9 @@ class ExpertCache:
             uids = sorted(uids, key=lambda uid: self.registered_experts[uid].offloaded)
         infos = [self.registered_experts[uid] for uid in uids]
 
-        assert len(set(info.eviction_group for info in infos)) == 1, "experts must be in the same evicton group"
+        assert (
+            len(set(info.eviction_group for info in infos)) == 1
+        ), "experts must be in the same evicton group"
         eviction_group = self.group_infos[infos[0].eviction_group]
         for info in infos:
             eviction_group.mark_used(info)
@@ -146,20 +201,28 @@ class ExpertCache:
             self.active = True
             # save pre-loaded experts before they can be swapped
             pre_loaded_infos = deque([info for info in infos if not info.offloaded])
-            pre_loaded_experts = deque([self.main_modules[info.index] for info in pre_loaded_infos])
+            pre_loaded_experts = deque(
+                [self.main_modules[info.index] for info in pre_loaded_infos]
+            )
 
             # begin loading experts into free buffers in background (via non-blocking copy)
             infos_to_load = deque([info for info in infos if info.offloaded])
             infos_in_loading = deque([])
             experts_in_loading = deque([])
-            window_size = min(len(self.device_expert_buffers) - 1,
-                              len(eviction_group.main_infos),
-                              len(infos_to_load))
+            window_size = min(
+                len(self.device_expert_buffers) - 1,
+                len(eviction_group.main_infos),
+                len(infos_to_load),
+            )
             for _ in range(window_size):
                 info_to_load = infos_to_load.popleft()
                 infos_in_loading.append(info_to_load)
                 experts_in_loading.append(
-                    self._swap(info_to_load, eviction_group.choose_expert_to_evict()))
+                    self._swap(
+                        info_to_load,
+                        eviction_group.choose_expert_to_evict(EVICTION_STRATEGY),
+                    )
+                )
 
             for info in infos:
                 if len(pre_loaded_infos) > 0 and info is pre_loaded_infos[0]:
@@ -172,7 +235,13 @@ class ExpertCache:
                         info_to_load = infos_to_load.popleft()
                         infos_in_loading.append(info_to_load)
                         experts_in_loading.append(
-                            self._swap(info_to_load, eviction_group.choose_expert_to_evict()))
+                            self._swap(
+                                info_to_load,
+                                eviction_group.choose_expert_to_evict(
+                                    EVICTION_STRATEGY
+                                ),
+                            )
+                        )
                 else:
                     raise RuntimeError("internal error: caching algorithm failed")
         finally:
@@ -185,17 +254,29 @@ class ExpertCache:
         # swap a single on-device expert with a single offloaded expert using buffers for parallelism
         offloaded_storage_buffer = self.offloaded_storage_buffers.popleft()
         device_expert_buffer = self.device_expert_buffers.popleft()
-        device_expert_buffer.storage.copy_(self.offloaded_storages[info_to_load.index], non_blocking=True)
-        offloaded_storage_buffer.copy_(self.main_modules[info_to_evict.index].storage, non_blocking=True)
+        device_expert_buffer.storage.copy_(
+            self.offloaded_storages[info_to_load.index], non_blocking=True
+        )
+        offloaded_storage_buffer.copy_(
+            self.main_modules[info_to_evict.index].storage, non_blocking=True
+        )
 
         self.device_expert_buffers.append(self.main_modules[info_to_evict.index])
         self.main_modules[info_to_evict.index] = device_expert_buffer
-        self.offloaded_storage_buffers.append(self.offloaded_storages[info_to_load.index])
+        self.offloaded_storage_buffers.append(
+            self.offloaded_storages[info_to_load.index]
+        )
         self.offloaded_storages[info_to_load.index] = offloaded_storage_buffer
 
         self.main_infos[info_to_evict.index] = info_to_load
         self.offloaded_infos[info_to_load.index] = info_to_evict
-        info_to_evict.offloaded, info_to_load.offloaded = info_to_load.offloaded, info_to_evict.offloaded
-        info_to_evict.index, info_to_load.index = info_to_load.index, info_to_evict.index
+        info_to_evict.offloaded, info_to_load.offloaded = (
+            info_to_load.offloaded,
+            info_to_evict.offloaded,
+        )
+        info_to_evict.index, info_to_load.index = (
+            info_to_load.index,
+            info_to_evict.index,
+        )
         self.group_infos[info_to_load.eviction_group].swap(info_to_load, info_to_evict)
         return device_expert_buffer

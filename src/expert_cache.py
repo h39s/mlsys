@@ -66,8 +66,8 @@ class ExpertCache:
         # assert self.module_size is not None
         # self.offloaded_storages = [
         #     torch.UntypedStorage(self.module_size).pin_memory(self.device) for _ in range(offload_size)]
-        self.offloaded_infos: List[Optional[ExpertInfo]] = [None for _ in range(offload_size)]
         self.offloaded_modules = [self._check_module(make_module(use_gpu=False)) for _ in range(offload_size)]
+        self.offloaded_infos: List[Optional[ExpertInfo]] = [None for _ in range(offload_size)]
 
         # # temporary storage to shave off latency
         # self.device_expert_buffers = deque([self._check_module(make_module()) for _ in range(buffer_size)])
@@ -187,6 +187,7 @@ class ExpertCache:
             self.active = False
 
     def load_experts_without_moving(self, *uids: ExpertUID) -> Iterator[Tuple[ExpertUID, MixtralExpertWrapper]]:
+        uids = sorted(uids, key=lambda uid: self.registered_experts[uid].offloaded)
         infos = [self.registered_experts[uid] for uid in uids]
         selected_experts = [self.main_modules[info.index] if not info.offloaded else self.offloaded_modules[info.index] for info in infos]
         for uid, expert in zip(uids, selected_experts):

@@ -160,3 +160,4 @@ cython_debug/
 #.idea/
 
 Mixtral-8x7B-Instruct-v0.1-offloading-demo
+.vscode

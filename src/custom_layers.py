@@ -24,6 +24,8 @@ class HQQLinearTritonSavable(HQQLinear):
         assert quant_config['weight_quant_params']['nbits'] in [2, 3, 4]
         
         self.use_gpu = use_gpu
+        if not self.use_gpu:
+            self.dequantize_in_forward = False
         super().__init__(layer, quant_config, **kwargs)
         
         if not hasattr(self, 'meta'):
@@ -34,6 +36,11 @@ class HQQLinearTritonSavable(HQQLinear):
         self._register_load_state_dict_pre_hook(self._load_from_state_dict_hook)
     
     def quantize(self, W, weight_quant_params, scale_quant_params, zero_quant_params):
+        if not self.dequantize_in_forward:
+            self.W = W
+            self.ready = True
+            return
+        
         quant_scale = scale_quant_params is not None
         quant_zero  = zero_quant_params  is not None
         
@@ -55,6 +62,32 @@ class HQQLinearTritonSavable(HQQLinear):
         
         # repacking
         self.repack()
+        
+    def cuda(self, device_n=0):
+        if(self.in_gpu): return 
+        self.W_q, self.meta = Quantizer.cuda(self.W_q, self.meta, device_n)
+        if(self.meta['quant_scale']):
+            self.meta['scale_q'] , self.meta['meta_scale'] = Quantizer.cuda(self.meta['scale_q'], self.meta['meta_scale'], device_n)
+        if(self.meta['quant_zero']):
+            self.meta['zero_q'] , self.meta['meta_zero']   = Quantizer.cuda(self.meta['zero_q'], self.meta['meta_zero'], device_n)
+
+        if(self.bias is not None):
+            self.bias = self.bias.half().cuda(device_n)
+
+        self.in_gpu = True
+    
+    def cpu(self):
+        if(self.in_gpu==False): return 
+        self.W_q, self.meta = Quantizer.cpu(self.W_q, self.meta)
+        if(self.meta['quant_scale']):
+            self.meta['scale_q'] , self.meta['meta_scale'] = Quantizer.cpu(self.meta['scale_q'], self.meta['meta_scale'])
+        if(self.meta['quant_zero']):
+            self.meta['zero_q'] , self.meta['meta_zero']   = Quantizer.cpu(self.meta['zero_q'], self.meta['meta_zero'])
+
+        if(self.bias is not None):
+            self.bias = self.bias.half().cpu()
+
+        self.in_gpu = False
     
     def repack(self):
         if self.W_q.shape != self.meta['shape']:
@@ -73,6 +106,47 @@ class HQQLinearTritonSavable(HQQLinear):
         pass
     
     @torch.inference_mode()
+    def forward_pytorch(self, x):
+        assert self.ready, "model was not quantized"
+        assert self.meta['axis'] == 0
+        
+        if not self.dequantize_in_forward:
+            if not hasattr(self, 'W'):
+                self.W = self.dequantize()
+            out = torch.matmul(x, self.W.t())
+            if(self.bias!=None): out += self.bias
+            return out
+        
+        W_q, meta = self.W_q, self.meta
+        del_keys = []
+        if(meta['quant_scale']):
+            meta['scale'] = Quantizer.dequantize(meta['scale_q'], meta['meta_scale']); del_keys.append('scale')
+        if(meta['quant_zero']):
+            meta['zero']  = Quantizer.dequantize(meta['zero_q'],  meta['meta_zero']);  del_keys.append('zero')
+        
+        ### FORWARD CPU ############
+        W_q_p = Quantizer.unpack[meta['packing']](W_q).half()
+        W_q_p = W_q_p[:meta['shape'][0], ...]
+        W_q_p = W_q_p.reshape((meta['group_size'], -1))
+    
+        if((meta['group_size'] is not None) and (meta['nbits']==3)):
+            W_q_p = W_q_p[:meta['group_size']] if (meta['axis']==0) else W_q_p[:,:meta['group_size']]
+        W_est = ((W_q_p - meta['zero'])*meta['scale']).reshape(meta['shape']) 
+        
+        
+        out   = torch.matmul(x, W_est.t())
+        if(self.bias!=None): out += self.bias
+        ############################
+        
+        #Cleanup
+        for key in del_keys: 
+            del meta[key]
+        del W_q_p
+        del W_est
+        
+        return out
+    
+    @torch.inference_mode()
     def forward_triton(self, x):
         assert self.ready, "model was not quantized"
         assert self.meta['axis'] == 0
@@ -85,6 +159,7 @@ class HQQLinearTritonSavable(HQQLinear):
         if 'quant_zero' in meta and meta['quant_zero']:
             meta['zero']  = Quantizer.dequantize(meta['zero_q'],  meta['meta_zero']);  del_keys.append('zero')
 
+        ### FORWARD GPU ############
         K = meta['shape'][1]
         N = meta['shape'][0]
         
@@ -104,6 +179,7 @@ class HQQLinearTritonSavable(HQQLinear):
             meta['zero'].view(-1, K),
             bias=self.bias if hasattr(self, 'bias') else None,
         )
+        ############################
 
         #Cleanup
         for key in del_keys:

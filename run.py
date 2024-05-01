@@ -148,18 +148,15 @@ for layer_idx, eviction_group_info in expert_cache.group_infos.items():
     # print(f"Layer {layer_idx}: Hits: {hits}, Misses: {misses}")
     expert_hits[layer_idx] = eviction_group_info.expert_hits
 
-<<<<<<< HEAD
 print("Total hits: ", sum(layers2hits.values()))
 print("Total misses: ", sum(layers2misses.values()))
 print("Hit Rate: ", sum(layers2hits.values()) / (sum(layers2hits.values()) + sum(layers2misses.values())))
 print(expert_hits)
-=======
 # print("Total hits: ", sum(layers2hits.values()))
 # print("Total misses: ", sum(layers2misses.values()))
 hits = sum(layers2hits.values())
 misses = sum(layers2misses.values())
 print(f"Hit ratio: {hits / (hits + misses)}({hits} hits, {misses} misses)")
->>>>>>> 6343388 (add dynamic expert selection)
 
 experts_hits_modified = {}
 for layer_idx, layer_expert_hits in expert_hits.items():

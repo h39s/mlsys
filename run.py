@@ -126,6 +126,7 @@ for layer_idx, eviction_group_info in expert_cache.group_infos.items():
 
 print("Total hits: ", sum(layers2hits.values()))
 print("Total misses: ", sum(layers2misses.values()))
+print("Hit Rate: ", sum(layers2hits.values()) / (sum(layers2hits.values()) + sum(layers2misses.values())))
 print(expert_hits)
 
 # # plot a heat map of per layer expert hits

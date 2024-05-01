@@ -24,8 +24,6 @@ class HQQLinearTritonSavable(HQQLinear):
         assert quant_config['weight_quant_params']['nbits'] in [2, 3, 4]
         
         self.use_gpu = use_gpu
-        if not self.use_gpu:
-            self.dequantize_in_forward = False
         super().__init__(layer, quant_config, **kwargs)
         
         if not hasattr(self, 'meta'):
@@ -36,11 +34,6 @@ class HQQLinearTritonSavable(HQQLinear):
         self._register_load_state_dict_pre_hook(self._load_from_state_dict_hook)
     
     def quantize(self, W, weight_quant_params, scale_quant_params, zero_quant_params):
-        if not self.dequantize_in_forward:
-            self.W = W
-            self.ready = True
-            return
-        
         quant_scale = scale_quant_params is not None
         quant_zero  = zero_quant_params  is not None
         
@@ -109,13 +102,6 @@ class HQQLinearTritonSavable(HQQLinear):
     def forward_pytorch(self, x):
         assert self.ready, "model was not quantized"
         assert self.meta['axis'] == 0
-        
-        if not self.dequantize_in_forward:
-            if not hasattr(self, 'W'):
-                self.W = self.dequantize()
-            out = torch.matmul(x, self.W.t())
-            if(self.bias!=None): out += self.bias
-            return out
         
         W_q, meta = self.W_q, self.meta
         del_keys = []

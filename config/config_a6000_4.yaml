@@ -5,6 +5,5 @@ cache_strategy:
   - lru
   - lfu
 max_seq_len: 
-  - 256
   - 512
 num_runs: 3

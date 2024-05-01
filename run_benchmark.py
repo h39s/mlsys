@@ -165,14 +165,14 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
             overall_misses += tot_calls - tot_hits
             print(f"Layer {layer}: Hit rate = {tot_hits/tot_calls}", file=log_file)
 
-            print(f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}", file=log_file)
-            track_runs_hits.append(overall_hits/(overall_hits + overall_misses))
+        print(f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}", file=log_file)
+        track_runs_hits.append(overall_hits/(overall_hits + overall_misses))
 
 
             # dump data_hits, total_time, total_num_tokens to a json file
-            import json
-            all_stats = {"data_hits": data_hits, "total_time": total_time, "total_num_tokens": total_num_tokens}
-            json.dump(all_stats, dump_data_file, indent=4)
+        import json
+        all_stats = {"data_hits": data_hits, "total_time": total_time, "total_num_tokens": total_num_tokens}
+        json.dump(all_stats, dump_data_file, indent=4)
 
     overall_results_file = open(f"{log_dir}/overall_results.txt", "w")
     print("OVERALL RESULTS", file=overall_results_file)

@@ -121,7 +121,7 @@ def get_default_ffn_quant_config(ffn_dim: int = 14336, hidden_dim: int = 4096):
 
 
 def make_empty_expert(
-    model_config: MixtralConfig, quant_config: QuantConfig, use_gpu: bool = True
+    model_config: MixtralConfig, quant_config: QuantConfig
 ) -> MixtralBLockSparseTop2MLP_HQQ:
     meta1, meta2 = quant_config.get_ffn_metas(
         model_config.hidden_size, model_config.intermediate_size
@@ -131,7 +131,6 @@ def make_empty_expert(
         quant_config.ffn_config,
         meta1,
         meta2,
-        use_gpu
     )
 
 
@@ -141,7 +140,6 @@ def make_and_load_expert_wrapper(
     states_dir: str,
     expert_uid: tuple[int, int],
     device: torch.device,
-    use_gpu: bool = True,
 ) -> MixtralExpertWrapper:
     layer_idx, expert_idx = expert_uid
 
@@ -151,7 +149,7 @@ def make_and_load_expert_wrapper(
         state_fpath = json.load(f)["weight_map"][f"{module_idx}.w1.W_q"]
 
     state_dict = load_file(os.path.join(states_dir, state_fpath), device=str(device))
-    expert = make_empty_expert(config, quant_config, use_gpu)
+    expert = make_empty_expert(config, quant_config)
     expert.load_state_dict(state_dict, strict=True)
 
     return MixtralExpertWrapper(expert, device)
@@ -175,11 +173,11 @@ def build_model(
 
     state_dict_00 = load_00_expert_state_dict(state_path, device)
 
-    def _make_module(use_gpu=True):
+    def _make_module():
         config = AutoConfig.from_pretrained(model_name)
-        expert = make_empty_expert(config, quant_config, use_gpu)
+        expert = make_empty_expert(config, quant_config)
         expert.load_state_dict(state_dict_00)
-        return MixtralExpertWrapper(expert, device=device if use_gpu else 'cpu')
+        return MixtralExpertWrapper(expert, device=device)
 
     with device, with_default_dtype(torch.float16):
         model = MixtralForCausalLM(
@@ -208,7 +206,6 @@ def build_model(
         main_size=offload_config.main_size,
         offload_size=offload_config.offload_size,
         buffer_size=offload_config.buffer_size,
-        fiddler=True,
     )
     for layer_idx in trange(model_config.num_hidden_layers, desc="Loading experts"):
         curr_layer = model.model.layers[layer_idx]
@@ -227,8 +224,7 @@ def build_model(
                 quant_config=quant_config,
                 states_dir=state_path,
                 expert_uid=(layer_idx, expert_idx),
-                device='cpu' if do_offload else device,
-                use_gpu=not do_offload,
+                device=device,
             )
 
             expert_cache.add_expert(
@@ -242,4 +238,4 @@ def build_model(
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
 
-    return model
+    return model, expert_cache

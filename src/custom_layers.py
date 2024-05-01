@@ -14,7 +14,7 @@ from .triton_kernels import triton_matmul4_transpose, triton_matmul3_transpose, 
 
 
 class HQQLinearTritonSavable(HQQLinear):
-    def __init__(self, layer, quant_config, meta=None, use_gpu=True, **kwargs):
+    def __init__(self, layer, quant_config, meta=None, **kwargs):
         """
         Example how to get meta:
         >>>> meta1 = HQQLinearSavable.get_hqq_meta((hidden_dim, ffn_dim), quant_config)
@@ -23,7 +23,6 @@ class HQQLinearTritonSavable(HQQLinear):
         
         assert quant_config['weight_quant_params']['nbits'] in [2, 3, 4]
         
-        self.use_gpu = use_gpu
         super().__init__(layer, quant_config, **kwargs)
         
         if not hasattr(self, 'meta'):
@@ -33,54 +32,11 @@ class HQQLinearTritonSavable(HQQLinear):
         self._register_state_dict_hook(self._add_to_state_dict_hook)
         self._register_load_state_dict_pre_hook(self._load_from_state_dict_hook)
     
-    def quantize(self, W, weight_quant_params, scale_quant_params, zero_quant_params):
-        quant_scale = scale_quant_params is not None
-        quant_zero  = zero_quant_params  is not None
-        
-        #Quantize
-        W_q , meta = Quantizer.quantize(W, **weight_quant_params) 
-        meta.update({'quant_scale':quant_scale, 'quant_zero':quant_zero})
-        if(meta['quant_scale']):
-            meta['scale_q'] , meta['meta_scale'] = Quantizer.quantize(meta['scale'], **scale_quant_params); del meta['scale']
-        if(meta['quant_zero']):
-            meta['zero_q'], meta['meta_zero']    = Quantizer.quantize(meta['zero'],  **zero_quant_params);  del meta['zero']
-
-        self.W_q   = W_q
-        self.meta  = meta
-        if self.use_gpu:
-            self.cuda()
-        else:
-            self.cpu()
-        self.ready = True
+    def quantize(self, *args, **kwargs):
+        super().quantize(*args, **kwargs)
         
         # repacking
         self.repack()
-        
-    def cuda(self, device_n=0):
-        if(self.in_gpu): return 
-        self.W_q, self.meta = Quantizer.cuda(self.W_q, self.meta, device_n)
-        if(self.meta['quant_scale']):
-            self.meta['scale_q'] , self.meta['meta_scale'] = Quantizer.cuda(self.meta['scale_q'], self.meta['meta_scale'], device_n)
-        if(self.meta['quant_zero']):
-            self.meta['zero_q'] , self.meta['meta_zero']   = Quantizer.cuda(self.meta['zero_q'], self.meta['meta_zero'], device_n)
-
-        if(self.bias is not None):
-            self.bias = self.bias.half().cuda(device_n)
-
-        self.in_gpu = True
-    
-    def cpu(self):
-        if(self.in_gpu==False): return 
-        self.W_q, self.meta = Quantizer.cpu(self.W_q, self.meta)
-        if(self.meta['quant_scale']):
-            self.meta['scale_q'] , self.meta['meta_scale'] = Quantizer.cpu(self.meta['scale_q'], self.meta['meta_scale'])
-        if(self.meta['quant_zero']):
-            self.meta['zero_q'] , self.meta['meta_zero']   = Quantizer.cpu(self.meta['zero_q'], self.meta['meta_zero'])
-
-        if(self.bias is not None):
-            self.bias = self.bias.half().cpu()
-
-        self.in_gpu = False
     
     def repack(self):
         if self.W_q.shape != self.meta['shape']:
@@ -91,45 +47,10 @@ class HQQLinearTritonSavable(HQQLinear):
             self.W_q = Quantizer.pack[self.meta['packing']](W_q)
     
     def forward(self, x):
-        if not self.use_gpu:
-            return self.forward_pytorch(x)
         return self.forward_triton(x)
     
     def set_backend(self, backend):
         pass
-    
-    @torch.inference_mode()
-    def forward_pytorch(self, x):
-        assert self.ready, "model was not quantized"
-        assert self.meta['axis'] == 0
-        
-        W_q, meta = self.W_q, self.meta
-        del_keys = []
-        if(meta['quant_scale']):
-            meta['scale'] = Quantizer.dequantize(meta['scale_q'], meta['meta_scale']); del_keys.append('scale')
-        if(meta['quant_zero']):
-            meta['zero']  = Quantizer.dequantize(meta['zero_q'],  meta['meta_zero']);  del_keys.append('zero')
-        
-        ### FORWARD CPU ############
-        W_q_p = Quantizer.unpack[meta['packing']](W_q).half()
-        W_q_p = W_q_p[:meta['shape'][0], ...]
-        W_q_p = W_q_p.reshape((meta['group_size'], -1))
-    
-        if((meta['group_size'] is not None) and (meta['nbits']==3)):
-            W_q_p = W_q_p[:meta['group_size']] if (meta['axis']==0) else W_q_p[:,:meta['group_size']]
-        W_est = ((W_q_p - meta['zero'])*meta['scale']).reshape(meta['shape']) 
-        
-        out   = torch.matmul(x, W_est.t())
-        if(self.bias!=None): out += self.bias
-        ############################
-        
-        #Cleanup
-        for key in del_keys: 
-            del meta[key]
-        del W_q_p
-        del W_est
-        
-        return out
     
     @torch.inference_mode()
     def forward_triton(self, x):
@@ -144,7 +65,6 @@ class HQQLinearTritonSavable(HQQLinear):
         if 'quant_zero' in meta and meta['quant_zero']:
             meta['zero']  = Quantizer.dequantize(meta['zero_q'],  meta['meta_zero']);  del_keys.append('zero')
 
-        ### FORWARD GPU ############
         K = meta['shape'][1]
         N = meta['shape'][0]
         
@@ -164,7 +84,6 @@ class HQQLinearTritonSavable(HQQLinear):
             meta['zero'].view(-1, K),
             bias=self.bias if hasattr(self, 'bias') else None,
         )
-        ############################
 
         #Cleanup
         for key in del_keys:
@@ -322,12 +241,12 @@ class HQQLinearTritonSavable(HQQLinear):
 
 
 class MixtralBLockSparseTop2MLP_HQQ(nn.Module):
-    def __init__(self, config: MixtralConfig, quant_config: Dict[str, Any], meta1, meta2, use_gpu=True):
+    def __init__(self, config: MixtralConfig, quant_config: Dict[str, Any], meta1, meta2):
         super().__init__()
         
-        self.w1 = HQQLinearTritonSavable(None, quant_config, meta1, use_gpu)
-        self.w2 = HQQLinearTritonSavable(None, quant_config, meta2, use_gpu)
-        self.w3 = HQQLinearTritonSavable(None, quant_config, meta1, use_gpu)
+        self.w1 = HQQLinearTritonSavable(None, quant_config, meta1)
+        self.w2 = HQQLinearTritonSavable(None, quant_config, meta2)
+        self.w3 = HQQLinearTritonSavable(None, quant_config, meta1)
 
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -386,9 +305,7 @@ class SparseMoeWrapper(nn.Module):
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-            if self.experts.fiddler:
-                current_state = current_state.to(expert_layer.storage.device)
-            current_hidden_states = expert_layer(current_state).to(routing_weights.device) * routing_weights[top_x_list, idx_list, None]
+            current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
 
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.

@@ -31,6 +31,13 @@ class EvictionGroupInfo:
     hits: int = field(default=0)
     misses: int = field(default=0)
     expert_hits: dict = field(default_factory=dict)
+    expert_counts = {} # [total, hits]
+    num_experts = 8
+    expert_counts: Dict[int, List[int]] = field(default_factory=dict)
+
+    def __post_init__(self):
+        for i in range(self.num_experts):
+            self.expert_counts[i] = [0, 0]
 
     def add(self, info: ExpertInfo):
         infos_odict = self.offloaded_infos if info.offloaded else self.main_infos
@@ -64,9 +71,11 @@ class EvictionGroupInfo:
 
     def mark_used(self, info: ExpertInfo):
         self.expert_hits[info.uid] = self.expert_hits.get(info.uid, 0) + 1
+        self.expert_counts[info.uid[1]][0] += 1
         if info.uid in self.main_infos:
             self.main_infos.move_to_end(info.uid, last=True)
             self.hits += 1
+            self.expert_counts[info.uid[1]][1] += 1
         elif info.uid in self.offloaded_infos:
             self.offloaded_infos.move_to_end(info.uid, last=True)
             self.misses += 1

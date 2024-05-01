@@ -164,8 +164,6 @@ for layer_idx, eviction_group_info in expert_cache.group_infos.items():
     misses = eviction_group_info.misses
     layers2hits[layer_idx] = hits
     layers2misses[layer_idx] = misses
-    # print(f"Layer {layer_idx}: Hits: {hits}, Misses: {misses}")
-    expert_hits[layer_idx] = eviction_group_info.expert_hits
 
 print("Total hits: ", sum(layers2hits.values()))
 print("Total misses: ", sum(layers2misses.values()))
@@ -174,22 +172,3 @@ print(
     sum(layers2hits.values())
     / (sum(layers2hits.values()) + sum(layers2misses.values())),
 )
-# print(expert_hits)
-
-# experts_hits_modified = {}
-# for layer_idx, layer_expert_hits in expert_hits.items():
-#     for (_, expert_idx), hits in layer_expert_hits.items():
-#         if layer_idx not in experts_hits_modified:
-#             experts_hits_modified[layer_idx] = {}
-#         if expert_idx not in experts_hits_modified[layer_idx]:
-#             experts_hits_modified[layer_idx][expert_idx] = 0
-#         experts_hits_modified[layer_idx][expert_idx] += hits
-
-# # sort expert by expert idx
-# sorted_expert_hits = {}
-# for layer_idx, expert_hits in experts_hits_modified.items():
-#     sorted_expert_hits[layer_idx] = dict(sorted(expert_hits.items()))
-
-# # save expert hits
-# with open(f"expert_hits_{datetime.now()}.json", "w") as f:
-#     json.dump(sorted_expert_hits, f, indent=4)

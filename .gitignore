@@ -164,3 +164,4 @@ Mixtral-8x7B-Instruct-v0.1-offloading-demo
 expts.ipynb
 # logs*
 track_results/*
+sch_logs/*

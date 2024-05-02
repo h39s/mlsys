@@ -1,0 +1,12 @@
+gpu: A100
+offload_per_layer:
+  - 4
+cache_strategy: 
+  - random
+  - lru
+  - lfu
+max_seq_len: 
+  - 256
+num_runs: 1
+num_prompts: 10
+offload_json: experts_to_offload.json

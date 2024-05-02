@@ -28,7 +28,7 @@ config = AutoConfig.from_pretrained(quantized_model_name)
 device = torch.device("cuda:0")
 
 ##### Change this to 5 if you have only 12 GB of GPU VRAM #####
-offload_per_layer = 4
+offload_per_layer = 6
 # offload_per_layer = 5
 ###############################################################
 

@@ -1,0 +1,42 @@
+TIME BENCHMARKS
+Total time taken: 1618.3237550258636 seconds
+Total number of tokens generated: 4402
+Average token per second: 2.7200984885312076
+
+
+
+
+HIT RATE BENCHMARKS
+Layer 0: Hit rate = 0.278414517669532
+Layer 1: Hit rate = 0.2806829035339064
+Layer 2: Hit rate = 0.3212750716332378
+Layer 3: Hit rate = 0.3358404966571156
+Layer 4: Hit rate = 0.27590735434574976
+Layer 5: Hit rate = 0.3018147086914995
+Layer 6: Hit rate = 0.3640597014925373
+Layer 7: Hit rate = 0.3576886341929322
+Layer 8: Hit rate = 0.37510452753553936
+Layer 9: Hit rate = 0.3835223880597015
+Layer 10: Hit rate = 0.33787010506208215
+Layer 11: Hit rate = 0.32675989004422135
+Layer 12: Hit rate = 0.3945765141560148
+Layer 13: Hit rate = 0.3498148811656515
+Layer 14: Hit rate = 0.3406160458452722
+Layer 15: Hit rate = 0.31721585482330467
+Layer 16: Hit rate = 0.3514869222500896
+Layer 17: Hit rate = 0.3127984718242598
+Layer 18: Hit rate = 0.26698507462686566
+Layer 19: Hit rate = 0.3079770718891808
+Layer 20: Hit rate = 0.3326170009551098
+Layer 21: Hit rate = 0.3533134328358209
+Layer 22: Hit rate = 0.32903533906399235
+Layer 23: Hit rate = 0.3183283582089552
+Layer 24: Hit rate = 0.3075820895522388
+Layer 25: Hit rate = 0.31677611940298506
+Layer 26: Hit rate = 0.2778175740210124
+Layer 27: Hit rate = 0.3038443170964661
+Layer 28: Hit rate = 0.28684021972772866
+Layer 29: Hit rate = 0.25405921680993315
+Layer 30: Hit rate = 0.28533906399235914
+Layer 31: Hit rate = 0.2968358208955224
+Overall hit rate = 0.3200843299315286

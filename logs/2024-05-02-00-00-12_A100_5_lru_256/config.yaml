@@ -1,0 +1,10 @@
+cache_strategy:
+- random
+- lru
+- lfu
+gpu: A100
+max_seq_len:
+- 256
+num_prompts: 10
+num_runs: 1
+offload_per_layer: 5

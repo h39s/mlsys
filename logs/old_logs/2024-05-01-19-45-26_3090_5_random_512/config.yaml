@@ -1,0 +1,9 @@
+cache_strategy:
+- random
+- lru
+- lfu
+gpu: 3090
+max_seq_len:
+- 512
+num_runs: 3
+offload_per_layer: 5

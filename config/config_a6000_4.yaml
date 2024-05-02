@@ -6,4 +6,5 @@ cache_strategy:
   - lfu
 max_seq_len: 
   - 512
-num_runs: 3
+num_runs: 1
+num_prompts: 2

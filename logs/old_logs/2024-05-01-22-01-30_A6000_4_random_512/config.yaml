@@ -1,0 +1,10 @@
+cache_strategy:
+- random
+- lru
+- lfu
+gpu: A6000
+max_seq_len:
+- 512
+num_prompts: 2
+num_runs: 1
+offload_per_layer: 4

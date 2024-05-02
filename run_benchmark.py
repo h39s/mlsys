@@ -39,8 +39,8 @@ if run_config.get("num_prompts", False):
 print(run_config)
 
 
-for cache_strategy, max_seq_len in itertools.product(
-    run_config["cache_strategy"], run_config["max_seq_len"]
+for offload_per_layer, cache_strategy, max_seq_len in itertools.product(
+    run_config["offload_per_layer"], run_config["cache_strategy"], run_config["max_seq_len"]
 ):
     print(
         f"Running benchmark for cache_strategy: {cache_strategy} and max_seq_len: {max_seq_len}"
@@ -48,7 +48,7 @@ for cache_strategy, max_seq_len in itertools.product(
     config = AutoConfig.from_pretrained(quantized_model_name)
 
     device = torch.device("cuda:0")
-    offload_per_layer = run_config["offload_per_layer"]
+    # offload_per_layer = run_config["offload_per_layer"]
 
     num_experts = config.num_local_experts
     offload_config = OffloadConfig(

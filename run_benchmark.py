@@ -90,9 +90,6 @@ for cache_strategy, max_seq_len in itertools.product(
         total_time = []
         total_num_tokens = []
         print(f"Running benchmark for run {run_idx}")
-        del model
-        torch.cuda.empty_cache()
-        time.sleep(5)
         if "offload_json" in run_config:
             print("Loading experts to offload from json")
             with open(run_config["offload_json"], "r") as f:
@@ -210,6 +207,10 @@ for cache_strategy, max_seq_len in itertools.product(
                 "total_num_tokens": total_num_tokens,
             }
             json.dump(all_stats, dump_data_file, indent=4)
+
+        del model
+        torch.cuda.empty_cache()
+        time.sleep(5)
 
     with open(f"{log_dir}/overall_results.txt", "w") as overall_results_file:
         print("OVERALL RESULTS", file=overall_results_file)

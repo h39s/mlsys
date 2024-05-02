@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import yaml
 from datetime import datetime
 import itertools
@@ -18,20 +19,28 @@ import numpy as np
 run_config = yaml.safe_load(open(sys.argv[1]))
 model_name = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 quantized_model_name = "lavawolfiee/Mixtral-8x7B-Instruct-v0.1-offloading-demo"
-state_path = './Mixtral-8x7B-Instruct-v0.1-offloading-demo'
+state_path = "./Mixtral-8x7B-Instruct-v0.1-offloading-demo"
 benchmark_prompts = "benchmark_prompts.txt"
+
+
 def read_prompt(file_path):
     with open(file_path, "r") as f:
         prompts = f.readlines()
     return prompts
+
+
 all_prompts = read_prompt(benchmark_prompts)
 if run_config.get("num_prompts", False):
-    all_prompts = all_prompts[:run_config["num_prompts"]]
+    all_prompts = all_prompts[: run_config["num_prompts"]]
 print(run_config)
 
 
-for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'], run_config['max_seq_len']):
-    print(f"Running benchmark for cache_strategy: {cache_strategy} and max_seq_len: {max_seq_len}")
+for cache_strategy, max_seq_len in itertools.product(
+    run_config["cache_strategy"], run_config["max_seq_len"]
+):
+    print(
+        f"Running benchmark for cache_strategy: {cache_strategy} and max_seq_len: {max_seq_len}"
+    )
     config = AutoConfig.from_pretrained(quantized_model_name)
 
     device = torch.device("cuda:0")
@@ -53,7 +62,6 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
     )
     attn_config["scale_quant_params"]["group_size"] = 256
 
-
     ffn_config = BaseQuantizeConfig(
         nbits=2,
         group_size=16,
@@ -64,7 +72,6 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    past_key_values = None
     sequence = None
     track_runs_time = []
     track_runs_num_tokens = []
@@ -78,22 +85,40 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
     with open(f"{log_dir}/config.yaml", "w") as f:
         yaml.dump(run_config, f)
 
-    for run_idx in range(run_config['num_runs']):
+    for run_idx in range(run_config["num_runs"]):
         total_time = []
         total_num_tokens = []
         print(f"Running benchmark for run {run_idx}")
-        model, expert_cache_obj = build_model(
-            device=device,
-            quant_config=quant_config,
-            offload_config=offload_config,
-            state_path=state_path,
-            cache_strategy=cache_strategy
-        )
-        run_log_dir = f"{log_dir}/run_{run_idx}"  
+        if "offload_json" in run_config:
+            print("Loading experts to offload from json")
+            with open(run_config["offload_json"], "r") as f:
+                experts_to_offload = json.load(f)
+                # convert keys and values to int
+                experts_to_offload = {
+                    int(k): [int(exp) for exp in v]
+                    for k, v in experts_to_offload.items()
+                }
+                model, expert_cache_obj = build_model(
+                    device=device,
+                    quant_config=quant_config,
+                    offload_config=offload_config,
+                    state_path=state_path,
+                    cache_strategy=cache_strategy,
+                    experts_to_offload=experts_to_offload,
+                )
+        else:
+            model, expert_cache_obj = build_model(
+                device=device,
+                quant_config=quant_config,
+                offload_config=offload_config,
+                state_path=state_path,
+                cache_strategy=cache_strategy,
+            )
+        run_log_dir = f"{log_dir}/run_{run_idx}"
         os.makedirs(run_log_dir, exist_ok=True)
         seq_len = 0
         # CHANGE FILENAME HERE
-        
+
         for i in range(len(all_prompts)):
             start = time.time()
             print("User: ", end="")
@@ -102,19 +127,15 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
             print("\n")
 
             user_entry = dict(role="user", content=user_input)
-            input_ids = tokenizer.apply_chat_template([user_entry], return_tensors="pt").to(device)
+            input_ids = tokenizer.apply_chat_template(
+                [user_entry], return_tensors="pt"
+            ).to(device)
 
-            if past_key_values is None:
-                attention_mask = torch.ones_like(input_ids)
-            else:
-                seq_len = input_ids.size(1) + past_key_values[0][0][0].size(1)
-                attention_mask = torch.ones([1, seq_len - 1], dtype=torch.int, device=device)
-
+            attention_mask = torch.ones_like(input_ids)
             print("Mixtral: ", end="")
             result = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                past_key_values=past_key_values,
                 streamer=streamer,
                 do_sample=True,
                 temperature=0.9,
@@ -126,23 +147,27 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
             )
             print("\n")
             sequence = result["sequences"]
-            past_key_values = result["past_key_values"]
             end = time.time()
             total_time.append(end - start)
             seq_len = sum([len(seq) for seq in sequence])
             total_num_tokens.append(seq_len)
 
-
         filename = "results"
         with open(f"{run_log_dir}/{filename}.txt", "w") as log_file:
             print("TIME BENCHMARKS", file=log_file)
             print(f"Total time taken: {sum(total_time)} seconds", file=log_file)
-            print(f"Total number of tokens generated: {sum(total_num_tokens)}", file=log_file)
-            print(f"Average token per second: {sum(total_num_tokens)/sum(total_time)}", file=log_file)
+            print(
+                f"Total number of tokens generated: {sum(total_num_tokens)}",
+                file=log_file,
+            )
+            print(
+                f"Average token per second: {sum(total_num_tokens)/sum(total_time)}",
+                file=log_file,
+            )
             track_runs_time.append(sum(total_time))
             track_runs_num_tokens.append(sum(total_num_tokens))
-            track_runs_tokens_per_second.append(sum(total_num_tokens)/sum(total_time))
-            print('\n\n\n', file=log_file)
+            track_runs_tokens_per_second.append(sum(total_num_tokens) / sum(total_time))
+            print("\n\n\n", file=log_file)
 
             print("HIT RATE BENCHMARKS", file=log_file)
             data_hits = {}
@@ -165,27 +190,50 @@ for cache_strategy, max_seq_len in itertools.product(run_config['cache_strategy'
                 overall_misses += tot_calls - tot_hits
                 print(f"Layer {layer}: Hit rate = {tot_hits/tot_calls}", file=log_file)
 
-            print(f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}", file=log_file)
-            track_runs_hits.append(overall_hits/(overall_hits + overall_misses))
-
+            print(
+                f"Overall hit rate = {overall_hits/(overall_hits + overall_misses)}",
+                file=log_file,
+            )
+            track_runs_hits.append(overall_hits / (overall_hits + overall_misses))
 
         with open(f"{run_log_dir}/{filename}.json", "w") as dump_data_file:
             # dump data_hits, total_time, total_num_tokens to a json file
             import json
-            all_stats = {"data_hits": data_hits, "total_time": total_time, "total_num_tokens": total_num_tokens}
+
+            all_stats = {
+                "data_hits": data_hits,
+                "total_time": total_time,
+                "total_num_tokens": total_num_tokens,
+            }
             json.dump(all_stats, dump_data_file, indent=4)
 
     with open(f"{log_dir}/overall_results.txt", "w") as overall_results_file:
         print("OVERALL RESULTS", file=overall_results_file)
-        print(f'All times', track_runs_time, file=overall_results_file)
-        print(f'All num tokens', track_runs_num_tokens, file=overall_results_file)
-        print(f'All tokens per second', track_runs_tokens_per_second, file=overall_results_file)
-        print(f'All hits', track_runs_hits, file=overall_results_file)
+        print(f"All times", track_runs_time, file=overall_results_file)
+        print(f"All num tokens", track_runs_num_tokens, file=overall_results_file)
+        print(
+            f"All tokens per second",
+            track_runs_tokens_per_second,
+            file=overall_results_file,
+        )
+        print(f"All hits", track_runs_hits, file=overall_results_file)
 
         # print mean and std of all times, num tokens, tokens per second, hits as mean
         # +- std
         print("OVERALL STATS", file=overall_results_file)
-        print(f'Run_Time: {sum(track_runs_time)/len(track_runs_time)} +- {np.std(track_runs_time)}', file=overall_results_file)
-        print(f'Num Tokens: {sum(track_runs_num_tokens)/len(track_runs_num_tokens)} +- {np.std(track_runs_num_tokens)}', file=overall_results_file)
-        print(f'Tokens per second: {sum(track_runs_tokens_per_second)/len(track_runs_tokens_per_second)} +- {np.std(track_runs_tokens_per_second)}', file=overall_results_file)
-        print(f'Hit Rate: {sum(track_runs_hits)/len(track_runs_hits)} +- {np.std(track_runs_hits)}', file=overall_results_file)
+        print(
+            f"Run_Time: {sum(track_runs_time)/len(track_runs_time)} +- {np.std(track_runs_time)}",
+            file=overall_results_file,
+        )
+        print(
+            f"Num Tokens: {sum(track_runs_num_tokens)/len(track_runs_num_tokens)} +- {np.std(track_runs_num_tokens)}",
+            file=overall_results_file,
+        )
+        print(
+            f"Tokens per second: {sum(track_runs_tokens_per_second)/len(track_runs_tokens_per_second)} +- {np.std(track_runs_tokens_per_second)}",
+            file=overall_results_file,
+        )
+        print(
+            f"Hit Rate: {sum(track_runs_hits)/len(track_runs_hits)} +- {np.std(track_runs_hits)}",
+            file=overall_results_file,
+        )

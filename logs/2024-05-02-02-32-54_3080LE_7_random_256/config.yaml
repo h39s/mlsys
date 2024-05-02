@@ -1,0 +1,8 @@
+cache_strategy:
+- random
+gpu: 3080LE
+max_seq_len:
+- 256
+num_prompts: 5
+num_runs: 1
+offload_per_layer: 7

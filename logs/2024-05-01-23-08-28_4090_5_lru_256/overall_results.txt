@@ -1,0 +1,10 @@
+OVERALL RESULTS
+All times [776.5605580806732]
+All num tokens [2804]
+All tokens per second [3.6107937376195016]
+All hits [0.4635871073622223]
+OVERALL STATS
+Run_Time: 776.5605580806732 +- 0.0
+Num Tokens: 2804.0 +- 0.0
+Tokens per second: 3.6107937376195016 +- 0.0
+Hit Rate: 0.4635871073622223 +- 0.0

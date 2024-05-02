@@ -32,10 +32,7 @@ def read_prompt(file_path):
 
 all_prompts = read_prompt(benchmark_prompts)
 if run_config.get("num_prompts", False):
-    # randomly change the prompts
-    all_prompts = np.random.choice(
-        all_prompts, run_config["num_prompts"], replace=False
-    )
+    all_prompts = all_prompts[: run_config["num_prompts"]]
 print(run_config)
 
 

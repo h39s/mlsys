@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import yaml
 from datetime import datetime
 import itertools
@@ -89,6 +90,9 @@ for cache_strategy, max_seq_len in itertools.product(
         total_time = []
         total_num_tokens = []
         print(f"Running benchmark for run {run_idx}")
+        del model
+        torch.cuda.empty_cache()
+        time.sleep(5)
         if "offload_json" in run_config:
             print("Loading experts to offload from json")
             with open(run_config["offload_json"], "r") as f:

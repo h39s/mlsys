@@ -134,18 +134,33 @@ for cache_strategy, max_seq_len in itertools.product(
 
             attention_mask = torch.ones_like(input_ids)
             print("Mixtral: ", end="")
-            result = model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                streamer=streamer,
-                do_sample=True,
-                temperature=0.9,
-                top_p=0.9,
-                max_new_tokens=max_seq_len,
-                pad_token_id=tokenizer.eos_token_id,
-                return_dict_in_generate=True,
-                output_hidden_states=True,
-            )
+            deterministic = run_config.get("deterministic", False)
+            if not deterministic:
+                result = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    streamer=streamer,
+                    do_sample=True,
+                    temperature=0.9,
+                    top_p=0.9,
+                    max_new_tokens=max_seq_len,
+                    pad_token_id=tokenizer.eos_token_id,
+                    return_dict_in_generate=True,
+                    output_hidden_states=True,
+                )
+            else:
+                print("Running deterministic")
+                result = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    streamer=streamer,
+                    do_sample=False,
+                    temperature=0.9,
+                    max_new_tokens=max_seq_len,
+                    pad_token_id=tokenizer.eos_token_id,
+                    return_dict_in_generate=True,
+                    output_hidden_states=True,
+                )
             print("\n")
             sequence = result["sequences"]
             end = time.time()
@@ -210,6 +225,7 @@ for cache_strategy, max_seq_len in itertools.product(
 
         del model
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         time.sleep(5)
 
     with open(f"{log_dir}/overall_results.txt", "w") as overall_results_file:

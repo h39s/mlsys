@@ -1,11 +1,11 @@
 gpu: 4090
 offload_per_layer: 4
 cache_strategy: 
+  - lfu
   - random
   - lru
-  - lfu
 max_seq_len: 
   - 512
-num_runs: 3
-num_prompts: 10
+num_runs: 1
+num_prompts: 5
 offload_json: experts_to_offload.json

@@ -11,8 +11,6 @@ from torch import nn
 
 ExpertUID = Any
 
-EVICTION_STRATEGY = "lru"
-
 
 @dataclass(frozen=False)
 class ExpertInfo:
@@ -44,6 +42,8 @@ class EvictionGroupInfo:
         infos_odict[info.uid] = info
 
     def choose_expert_to_evict(self, strategy="lru") -> ExpertInfo:
+        # print("length of main infos: ", len(self.main_infos))
+        # print("length of offloaded infos: ", len(self.offloaded_infos))
         if strategy == "lru":
             for uid, info in self.main_infos.items():
                 return info  # least recently used
@@ -83,7 +83,12 @@ class EvictionGroupInfo:
 
 class ExpertCache:
     def __init__(
-        self, make_module: callable, main_size: int, offload_size: int, buffer_size: int, cache_strategy: str
+        self,
+        make_module: callable,
+        main_size: int,
+        offload_size: int,
+        buffer_size: int,
+        cache_strategy: str,
     ):
         """Dynamically loads an array of modules with identical hyperparameters"""
         self.module_type = self.module_size = self.device = None
@@ -117,6 +122,17 @@ class ExpertCache:
             ]
         )
         self.group_infos: Dict[int, EvictionGroupInfo] = defaultdict(EvictionGroupInfo)
+
+        self.fp_counters = 0  # counter for number of forward passes
+        self.active_experts = []
+        with open("active_experts.txt", "r") as f:
+            lines = f.read().splitlines()
+            for i, line in enumerate(lines):
+                exps = [int(x) for x in line.split(",")]
+                assert len(exps) <= 8, f"line {i} has more than 8 experts"
+                if i >= 32:
+                    assert len(exps) == 2, f"line {i} has more than 2 experts"
+                self.active_experts.append(exps)
 
     def _check_module(self, module: MixtralExpertWrapper):
         assert isinstance(module.storage, torch.UntypedStorage)
@@ -154,6 +170,7 @@ class ExpertCache:
         assert uid not in self.registered_experts, f"expert {uid} already registered"
         assert isinstance(storage, torch.UntypedStorage)
         assert len(storage) == self.module_size
+        # eviction_group = 0  # manually set all experts to the same eviction group
 
         if offload is None or not offload:  # False or None
             for i in range(len(self.main_modules)):
@@ -255,10 +272,132 @@ class ExpertCache:
         finally:
             self.active = False
 
+    def load_experts_with_oracle(
+        self, *uids: ExpertUID, unordered: bool = False
+    ) -> Iterator[Tuple[ExpertUID, MixtralExpertWrapper]]:
+        """
+        :example:
+        >>> for uid, expert in expert_cache.load_experts(*list_of_uids, unordered=True):
+        >>>     for uid, expert in expert_iter:
+        >>>         result += expert(x) * get_moe_weight(uid)
+
+        :param uids: iterate over the specified expert uids. Same uids as in add_expert
+        :param unordered: if True, allows cache to iterate experts in arbitrary order
+            The order is chosen to minimize the total wait time.
+        :returns: an iterator that yields (uid, expert) pairs, only usable inside the for loop
+
+        """
+
+        assert len(set(uids)) == len(uids)
+        assert not self.active, "already loading experts; buffers are busy"
+        if unordered:  # yield non-offloaded experts first
+            uids = sorted(uids, key=lambda uid: self.registered_experts[uid].offloaded)
+        infos = [self.registered_experts[uid] for uid in uids]
+
+        assert (
+            len(set(info.eviction_group for info in infos)) == 1
+        ), "experts must be in the same evicton group"
+        eviction_group = self.group_infos[infos[0].eviction_group]
+        for info in infos:
+            eviction_group.mark_used(info)
+
+        try:
+            self.active = True
+            # save pre-loaded experts before they can be swapped
+            pre_loaded_infos = deque([info for info in infos if not info.offloaded])
+            pre_loaded_experts = deque(
+                [self.main_modules[info.index] for info in pre_loaded_infos]
+            )
+
+            # begin loading experts into free buffers in background (via non-blocking copy)
+            infos_to_load = deque([info for info in infos if info.offloaded])
+
+            infos_in_loading = deque([])
+            experts_in_loading = deque([])
+            window_size = min(
+                len(self.device_expert_buffers) - 1,
+                len(eviction_group.main_infos),
+                len(infos_to_load),
+            )
+            for _ in range(window_size):
+                info_to_load = infos_to_load.popleft()
+                infos_in_loading.append(info_to_load)
+                experts_in_loading.append(
+                    self._swap(
+                        info_to_load,
+                        eviction_group.choose_expert_to_evict(self.cache_strategy),
+                    )
+                )
+
+            for info in infos:
+                if len(pre_loaded_infos) > 0 and info is pre_loaded_infos[0]:
+                    pre_loaded_infos.popleft()
+                    yield (info.uid, pre_loaded_experts.popleft())
+                elif len(infos_in_loading) > 0 and info is infos_in_loading[0]:
+                    infos_in_loading.popleft()
+                    yield (info.uid, experts_in_loading.popleft())
+                    if len(infos_to_load) > 0:
+                        info_to_load = infos_to_load.popleft()
+                        infos_in_loading.append(info_to_load)
+                        experts_in_loading.append(
+                            self._swap(
+                                info_to_load,
+                                eviction_group.choose_expert_to_evict(
+                                    self.cache_strategy
+                                ),
+                            )
+                        )
+                else:
+                    raise RuntimeError("internal error: caching algorithm failed")
+
+            self.fp_counters += 1  # increment the forward pass counter
+            if self.fp_counters >= 31 and self.fp_counters + 32 < len(
+                self.active_experts
+            ):
+                next_token_active_experts = self.active_experts[self.fp_counters + 32]
+                assert (
+                    len(next_token_active_experts) == 2
+                ), f"line {self.fp_counters + 32} has more than 2 experts"
+                layer = uids[0][0]
+                next_token_active_uids = [
+                    (layer, uid) for uid in next_token_active_experts
+                ]
+                infos_next_token = [
+                    self.registered_experts[uid] for uid in next_token_active_uids
+                ]
+
+                # now also speculatively load the experts for the next token as well
+                # assuming access to the oracle
+                infos_to_load = deque(
+                    [info for info in infos_next_token if info.offloaded]
+                )
+                infos_in_loading = deque([])
+                experts_in_loading = deque([])
+                window_size = min(
+                    len(self.device_expert_buffers) - 1,
+                    len(eviction_group.main_infos),
+                    len(infos_to_load),
+                )
+                for _ in range(window_size):
+                    info_to_load = infos_to_load.popleft()
+                    infos_in_loading.append(info_to_load)
+                    # evict a loaded expert if it's not needed for the next token
+                    expert_to_evict = None
+                    for minfo in eviction_group.main_infos.values():
+                        if minfo not in infos_next_token:
+                            expert_to_evict = minfo
+                            break
+                    assert expert_to_evict is not None, "No expert to evict"
+                    experts_in_loading.append(self._swap(info_to_load, expert_to_evict))
+
+        finally:
+            self.active = False
+
     def _swap(self, info_to_load: ExpertInfo, info_to_evict: ExpertInfo) -> nn.Module:
         """Swap an offloaded expert (info_to_load) with an on-device expert (info_to_evict) return the loaded expert"""
         assert info_to_load.offloaded and not info_to_evict.offloaded
         assert info_to_load.eviction_group == info_to_evict.eviction_group
+        # assert info_to_load.eviction_group == 0 and info_to_evict.eviction_group == 0
         # swap a single on-device expert with a single offloaded expert using buffers for parallelism
         offloaded_storage_buffer = self.offloaded_storage_buffers.popleft()
         device_expert_buffer = self.device_expert_buffers.popleft()

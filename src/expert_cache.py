@@ -354,7 +354,12 @@ class ExpertCache:
             if self.fp_counters >= 31 and self.fp_counters + 32 < len(
                 self.active_experts
             ):
-                next_token_active_experts = self.active_experts[self.fp_counters + 32]
+                # print("Current active experts: ", [uid[1] for uid in uids])
+                # print(
+                #     "Current active experts from saved file: ",
+                #     self.active_experts[self.fp_counters - 1],
+                # )
+                next_token_active_experts = self.active_experts[self.fp_counters + 31]
                 assert (
                     len(next_token_active_experts) == 2
                 ), f"line {self.fp_counters + 32} has more than 2 experts"
